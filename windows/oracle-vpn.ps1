@@ -29,8 +29,8 @@ public class WinINet {
     public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
 
     public static void RefreshProxy() {
-        InternetSetOption(IntPtr.Zero, 39, IntPtr.Zero, 0); // INTERNET_OPTION_SETTINGS_CHANGED
-        InternetSetOption(IntPtr.Zero, 37, IntPtr.Zero, 0); // INTERNET_OPTION_REFRESH
+        InternetSetOption(IntPtr.Zero, 39, IntPtr.Zero, 0);
+        InternetSetOption(IntPtr.Zero, 37, IntPtr.Zero, 0);
     }
 }
 "@
@@ -67,7 +67,7 @@ function Fix-KeyPermissions {
 }
 
 function Start-VPN {
-    Write-Host "▶ Starting Oracle Cloud VPN 24/7 background tunnel..." -ForegroundColor Cyan
+    Write-Host "[*] Starting Oracle Cloud VPN 24/7 background tunnel..." -ForegroundColor Cyan
     Fix-KeyPermissions
 
     # Stop any existing stale instance
@@ -89,19 +89,18 @@ function Start-VPN {
     Start-Sleep -Seconds 2
     Enable-WindowsProxy
 
-    Write-Host "✔ Oracle VPN is active and Windows System Proxy is enabled!" -ForegroundColor Green
+    Write-Host "[OK] Oracle VPN is active and Windows System Proxy is enabled!" -ForegroundColor Green
     Write-Host "All Windows apps (Edge, Chrome, Firefox, games, apps) are now routed through $ServerIP." -ForegroundColor Yellow
 }
 
 function Stop-VPN {
-    Write-Host "▶ Stopping Oracle Cloud VPN..." -ForegroundColor Cyan
+    Write-Host "[*] Stopping Oracle Cloud VPN..." -ForegroundColor Cyan
     Stop-Process -Name "ssh" -ErrorAction SilentlyContinue | Out-Null
     
-    # Kill python bridge if running
     Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*http_socks_bridge.py*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
 
     Disable-WindowsProxy
-    Write-Host "✔ Oracle VPN stopped and Windows proxy returned to direct." -ForegroundColor Green
+    Write-Host "[OK] Oracle VPN stopped and Windows proxy returned to direct." -ForegroundColor Green
 }
 
 function Test-VPN {
@@ -120,7 +119,6 @@ function Test-VPN {
             Write-Host "ONLINE (IP: $ip)" -ForegroundColor Yellow
         }
     } catch {
-        # Fallback test with curl.exe
         try {
             $ip = (curl.exe -s --max-time 5 -x "socks5h://127.0.0.1:$SocksPort" https://ifconfig.me).Trim()
             if ($ip -eq $ServerIP) {
@@ -155,9 +153,9 @@ function Show-Status {
 
     $sshProc = Get-Process -Name "ssh" -ErrorAction SilentlyContinue
     if ($sshProc) {
-        Write-Host "Service Status:     ● ACTIVE (PID: $($sshProc.Id))" -ForegroundColor Green
+        Write-Host "Service Status:     [ACTIVE] (PID: $($sshProc.Id))" -ForegroundColor Green
     } else {
-        Write-Host "Service Status:     ● INACTIVE" -ForegroundColor Red
+        Write-Host "Service Status:     [INACTIVE]" -ForegroundColor Red
     }
 
     Write-Host "Target Oracle VPS:  $ServerIP"
@@ -180,7 +178,7 @@ function Show-Status {
 }
 
 function Install-AutoStart {
-    Write-Host "▶ Registering Windows Scheduled Task for 24/7 Autostart on Logon..." -ForegroundColor Cyan
+    Write-Host "[*] Registering Windows Scheduled Task for 24/7 Autostart on Logon..." -ForegroundColor Cyan
     $taskName = "OracleVPNShield"
     $psExe = (Get-Command powershell.exe).Source
     $taskScript = Join-Path $ScriptDir "oracle-vpn.ps1"
@@ -190,13 +188,13 @@ function Install-AutoStart {
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
-    Write-Host "✔ 24/7 Autostart scheduled task registered! The VPN will start automatically whenever Windows boots/logs in." -ForegroundColor Green
+    Write-Host "[OK] 24/7 Autostart scheduled task registered! The VPN will start automatically whenever Windows boots/logs in." -ForegroundColor Green
 }
 
 function Uninstall-AutoStart {
     $taskName = "OracleVPNShield"
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
-    Write-Host "✔ Autostart scheduled task removed." -ForegroundColor Green
+    Write-Host "[OK] Autostart scheduled task removed." -ForegroundColor Green
 }
 
 switch ($Action) {
