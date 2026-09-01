@@ -1,0 +1,7 @@
+{
+  "server_user": "ubuntu",
+  "server_ip": "161.118.166.96",
+  "socks_port": 1080,
+  "http_port": 8080,
+  "key_file": "keys/miracle-private.key"
+}

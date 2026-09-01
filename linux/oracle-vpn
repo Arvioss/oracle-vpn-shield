@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Oracle Cloud VPN & Proxy Barrier Manager
+# Location: /home/arvioss/bin/oracle-vpn
+
+SERVICE_NAME="oracle-vpn.service"
+SERVER_IP="161.118.166.96"
+SOCKS_PORT=1080
+HTTP_PORT=8080
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+enable_gnome_proxy() {
+    if command -v gsettings >/dev/null 2>&1; then
+        gsettings set org.gnome.system.proxy mode 'manual' 2>/dev/null || true
+        gsettings set org.gnome.system.proxy.socks host '127.0.0.1' 2>/dev/null || true
+        gsettings set org.gnome.system.proxy.socks port $SOCKS_PORT 2>/dev/null || true
+        gsettings set org.gnome.system.proxy.http host '127.0.0.1' 2>/dev/null || true
+        gsettings set org.gnome.system.proxy.http port $HTTP_PORT 2>/dev/null || true
+        gsettings set org.gnome.system.proxy.http enabled true 2>/dev/null || true
+        gsettings set org.gnome.system.proxy.https host '127.0.0.1' 2>/dev/null || true
+        gsettings set org.gnome.system.proxy.https port $HTTP_PORT 2>/dev/null || true
+    fi
+}
+
+disable_gnome_proxy() {
+    if command -v gsettings >/dev/null 2>&1; then
+        gsettings set org.gnome.system.proxy mode 'none' 2>/dev/null || true
+    fi
+}
+
+get_gnome_proxy_status() {
+    if command -v gsettings >/dev/null 2>&1; then
+        gsettings get org.gnome.system.proxy mode 2>/dev/null | tr -d "'"
+    else
+        echo "unavailable"
+    fi
+}
+
+start_vpn() {
+    echo -e "${CYAN}▶ Starting Oracle VPN 24/7 background service...${NC}"
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$SERVICE_NAME"
+    sleep 2
+    enable_gnome_proxy
+    echo -e "${GREEN}✔ Oracle VPN service is running and GNOME system proxy is enabled.${NC}"
+    echo -e "${YELLOW}Tip: Run 'oracle-vpn test' to verify IP masking.${NC}"
+}
+
+stop_vpn() {
+    echo -e "${CYAN}▶ Stopping Oracle VPN service...${NC}"
+    systemctl --user stop "$SERVICE_NAME"
+    disable_gnome_proxy
+    echo -e "${GREEN}✔ Oracle VPN stopped and system proxy set to direct.${NC}"
+}
+
+restart_vpn() {
+    echo -e "${CYAN}▶ Restarting Oracle VPN service...${NC}"
+    systemctl --user restart "$SERVICE_NAME"
+    sleep 2
+    enable_gnome_proxy
+    echo -e "${GREEN}✔ Oracle VPN restarted successfully.${NC}"
+}
+
+test_vpn() {
+    echo -e "${BOLD}${BLUE}====================================================${NC}"
+    echo -e "${BOLD}${BLUE}       Oracle VPN Connectivity & Masking Test       ${NC}"
+    echo -e "${BOLD}${BLUE}====================================================${NC}"
+    
+    echo -n "Checking SOCKS5 Tunnel (Port $SOCKS_PORT)... "
+    SOCKS_IP=$(curl -s --max-time 6 -x socks5h://127.0.0.1:$SOCKS_PORT https://ifconfig.me 2>/dev/null)
+    if [ "$SOCKS_IP" = "$SERVER_IP" ]; then
+        echo -e "${GREEN}ONLINE ($SOCKS_IP - Oracle VPS)${NC}"
+    elif [ -n "$SOCKS_IP" ]; then
+        echo -e "${YELLOW}ONLINE (IP: $SOCKS_IP)${NC}"
+    else
+        echo -e "${RED}OFFLINE${NC}"
+    fi
+
+    echo -n "Checking HTTP Bridge Proxy (Port $HTTP_PORT)... "
+    HTTP_IP=$(curl -s --max-time 6 -x http://127.0.0.1:$HTTP_PORT https://ifconfig.me 2>/dev/null)
+    if [ "$HTTP_IP" = "$SERVER_IP" ]; then
+        echo -e "${GREEN}ONLINE ($HTTP_IP - Oracle VPS)${NC}"
+    elif [ -n "$HTTP_IP" ]; then
+        echo -e "${YELLOW}ONLINE (IP: $HTTP_IP)${NC}"
+    else
+        echo -e "${RED}OFFLINE${NC}"
+    fi
+
+    echo -n "Testing DNS Leak Protection (Remote Resolution)... "
+    DNS_TEST=$(curl -s --max-time 6 -x socks5h://127.0.0.1:$SOCKS_PORT https://api.ipify.org 2>/dev/null)
+    if [ -n "$DNS_TEST" ]; then
+        echo -e "${GREEN}PROTECTED (Resolved via Oracle VPS)${NC}"
+    else
+        echo -e "${RED}FAILED${NC}"
+    fi
+
+    echo -e "${BOLD}${BLUE}====================================================${NC}"
+}
+
+status_vpn() {
+    echo -e "${BOLD}${BLUE}====================================================${NC}"
+    echo -e "${BOLD}${BLUE}              Oracle VPN Status Report              ${NC}"
+    echo -e "${BOLD}${BLUE}====================================================${NC}"
+
+    IS_ACTIVE=$(systemctl --user is-active "$SERVICE_NAME" 2>/dev/null)
+    if [ "$IS_ACTIVE" = "active" ]; then
+        echo -e "Service Status:     ${GREEN}● ACTIVE (24/7 Background)${NC}"
+    else
+        echo -e "Service Status:     ${RED}● INACTIVE ($IS_ACTIVE)${NC}"
+    fi
+
+    echo -e "Target Oracle VPS:  ${CYAN}$SERVER_IP${NC}"
+    echo -e "SOCKS5 Proxy:       ${CYAN}127.0.0.1:$SOCKS_PORT${NC}"
+    echo -e "HTTP/HTTPS Bridge:  ${CYAN}127.0.0.1:$HTTP_PORT${NC}"
+
+    GNOME_MODE=$(get_gnome_proxy_status)
+    if [ "$GNOME_MODE" = "manual" ]; then
+        echo -e "GNOME System Proxy: ${GREEN}ENABLED (Manual Proxy Active)${NC}"
+    else
+        echo -e "GNOME System Proxy: ${YELLOW}DISABLED ($GNOME_MODE)${NC}"
+    fi
+
+    # Ping latency check to VPS
+    PING_TIME=$(ping -c 1 -W 2 "$SERVER_IP" 2>/dev/null | grep 'time=' | sed -E 's/.*time=([0-9.]+).*/\1 ms/')
+    if [ -n "$PING_TIME" ]; then
+        echo -e "Oracle VPS Latency: ${GREEN}$PING_TIME${NC}"
+    fi
+
+    echo -e "\n${BOLD}Quick IP Verification:${NC}"
+    CURRENT_IP=$(curl -s --max-time 4 -x socks5h://127.0.0.1:$SOCKS_PORT https://ifconfig.me 2>/dev/null)
+    if [ -n "$CURRENT_IP" ]; then
+        echo -e "Masked IP via VPN:  ${GREEN}${BOLD}$CURRENT_IP${NC}"
+    else
+        echo -e "Masked IP via VPN:  ${RED}Tunnel not responding${NC}"
+    fi
+    echo -e "${BOLD}${BLUE}====================================================${NC}"
+}
+
+show_logs() {
+    echo -e "${CYAN}Displaying recent Oracle VPN logs...${NC}"
+    journalctl --user -u "$SERVICE_NAME" -n 30 --no-pager
+}
+
+case "$1" in
+    start)
+        start_vpn
+        ;;
+    stop)
+        stop_vpn
+        ;;
+    restart)
+        restart_vpn
+        ;;
+    status)
+        status_vpn
+        ;;
+    test)
+        test_vpn
+        ;;
+    logs)
+        show_logs
+        ;;
+    system-proxy)
+        if [ "$2" = "on" ]; then
+            enable_gnome_proxy
+            echo -e "${GREEN}GNOME system proxy enabled.${NC}"
+        elif [ "$2" = "off" ]; then
+            disable_gnome_proxy
+            echo -e "${YELLOW}GNOME system proxy disabled.${NC}"
+        else
+            echo "Usage: oracle-vpn system-proxy [on|off]"
+        fi
+        ;;
+    *)
+        echo -e "${BOLD}Oracle Cloud 24/7 VPN & Barrier CLI${NC}"
+        echo "Usage: oracle-vpn {start|stop|restart|status|test|logs|system-proxy [on|off]}"
+        exit 1
+        ;;
+esac
