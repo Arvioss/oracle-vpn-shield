@@ -17,7 +17,6 @@ if (-not (Test-Path $KeyPath)) {
 $ServerUser = "ubuntu"
 $ServerIP = "161.118.166.96"
 $SocksPort = 1080
-$HttpPort = 8080
 
 # WinINet API to instantly apply proxy changes across Windows without rebooting
 $WinINetCode = @"
@@ -29,8 +28,8 @@ public class WinINet {
     public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
 
     public static void RefreshProxy() {
-        InternetSetOption(IntPtr.Zero, 39, IntPtr.Zero, 0);
-        InternetSetOption(IntPtr.Zero, 37, IntPtr.Zero, 0);
+        InternetSetOption(IntPtr.Zero, 39, IntPtr.Zero, 0); // INTERNET_OPTION_SETTINGS_CHANGED
+        InternetSetOption(IntPtr.Zero, 37, IntPtr.Zero, 0); // INTERNET_OPTION_REFRESH
     }
 }
 "@
@@ -41,8 +40,10 @@ if (-not ([System.Management.Automation.PSTypeName]"WinINet").Type) {
 function Enable-WindowsProxy {
     $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
     Set-ItemProperty -Path $regPath -Name ProxyEnable -Value 1
-    Set-ItemProperty -Path $regPath -Name ProxyServer -Value "socks=127.0.0.1:$SocksPort;http=127.0.0.1:$HttpPort;https=127.0.0.1:$HttpPort"
-    Set-ItemProperty -Path $regPath -Name ProxyOverride -Value "<local>;localhost;127.0.0.1;10.*;192.168.*"
+    # Direct SOCKS5 proxy string: routes all HTTP, HTTPS, WebSockets (Discord), & TCP traffic directly through SOCKS5 on port 1080
+    Set-ItemProperty -Path $regPath -Name ProxyServer -Value "socks=127.0.0.1:$SocksPort"
+    # Proxy override to allow Discord local RPC and internal loopback connections
+    Set-ItemProperty -Path $regPath -Name ProxyOverride -Value "127.*;localhost;<local>;10.*;192.168.*;172.16.*;*.local;<-loopback>"
     [WinINet]::RefreshProxy()
 }
 
@@ -55,7 +56,7 @@ function Disable-WindowsProxy {
 function Get-ProxyStatus {
     $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
     $enabled = (Get-ItemProperty -Path $regPath -Name ProxyEnable -ErrorAction SilentlyContinue).ProxyEnable
-    if ($enabled -eq 1) { return "ENABLED (Manual Proxy Active)" } else { return "DISABLED" }
+    if ($enabled -eq 1) { return "ENABLED (SOCKS5 127.0.0.1:$SocksPort)" } else { return "DISABLED" }
 }
 
 function Fix-KeyPermissions {
@@ -77,28 +78,16 @@ function Start-VPN {
     $sshArgs = "-N -D 127.0.0.1:$SocksPort -i `"$KeyPath`" -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes $ServerUser@$ServerIP"
     Start-Process -FilePath "ssh" -ArgumentList $sshArgs -WindowStyle Hidden
 
-    # Launch HTTP Bridge if python is available
-    $bridgeScript = Join-Path $ScriptDir "http_socks_bridge.py"
-    if (Test-Path $bridgeScript) {
-        $pythonCmd = Get-Command python, python3 -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($pythonCmd) {
-            Start-Process -FilePath $pythonCmd.Source -ArgumentList "`"$bridgeScript`"" -WindowStyle Hidden
-        }
-    }
-
     Start-Sleep -Seconds 2
     Enable-WindowsProxy
 
     Write-Host "[OK] Oracle VPN is active and Windows System Proxy is enabled!" -ForegroundColor Green
-    Write-Host "All Windows apps (Edge, Chrome, Firefox, games, apps) are now routed through $ServerIP." -ForegroundColor Yellow
+    Write-Host "All Windows apps (Discord, Chrome, Edge, Firefox, games) are now routed through $ServerIP." -ForegroundColor Yellow
 }
 
 function Stop-VPN {
     Write-Host "[*] Stopping Oracle Cloud VPN..." -ForegroundColor Cyan
     Stop-Process -Name "ssh" -ErrorAction SilentlyContinue | Out-Null
-    
-    Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*http_socks_bridge.py*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
-
     Disable-WindowsProxy
     Write-Host "[OK] Oracle VPN stopped and Windows proxy returned to direct." -ForegroundColor Green
 }
@@ -110,37 +99,28 @@ function Test-VPN {
 
     Write-Host -NoNewline "Checking SOCKS5 Tunnel (Port $SocksPort)... "
     try {
-        $wc = New-Object System.Net.WebClient
-        $wc.Proxy = New-Object System.Net.WebProxy("socks://127.0.0.1:$SocksPort")
-        $ip = (Invoke-RestMethod -Uri "https://ifconfig.me" -Proxy "socks5://127.0.0.1:$SocksPort" -TimeoutSec 5).Trim()
+        $ip = (curl.exe -s --max-time 5 -x "socks5h://127.0.0.1:$SocksPort" https://ifconfig.me).Trim()
         if ($ip -eq $ServerIP) {
             Write-Host "ONLINE ($ip - Oracle VPS)" -ForegroundColor Green
-        } else {
+        } elseif ($ip) {
             Write-Host "ONLINE (IP: $ip)" -ForegroundColor Yellow
-        }
-    } catch {
-        try {
-            $ip = (curl.exe -s --max-time 5 -x "socks5h://127.0.0.1:$SocksPort" https://ifconfig.me).Trim()
-            if ($ip -eq $ServerIP) {
-                Write-Host "ONLINE ($ip - Oracle VPS)" -ForegroundColor Green
-            } else {
-                Write-Host "ONLINE (IP: $ip)" -ForegroundColor Yellow
-            }
-        } catch {
+        } else {
             Write-Host "OFFLINE" -ForegroundColor Red
         }
+    } catch {
+        Write-Host "OFFLINE" -ForegroundColor Red
     }
 
-    Write-Host -NoNewline "Checking HTTP Bridge Proxy (Port $HttpPort)... "
+    Write-Host -NoNewline "Testing Discord Gateway Resolution... "
     try {
-        $ip2 = (curl.exe -s --max-time 5 -x "http://127.0.0.1:$HttpPort" https://ifconfig.me).Trim()
-        if ($ip2 -eq $ServerIP) {
-            Write-Host "ONLINE ($ip2 - Oracle VPS)" -ForegroundColor Green
+        $discTest = (curl.exe -s --max-time 5 -x "socks5h://127.0.0.1:$SocksPort" https://discord.com/api/v9/gateway).Trim()
+        if ($discTest -match "wss://gateway.discord.gg") {
+            Write-Host "SUCCESS (Discord Gateway Accessible)" -ForegroundColor Green
         } else {
-            Write-Host "ONLINE (IP: $ip2)" -ForegroundColor Yellow
+            Write-Host "CONNECTED" -ForegroundColor Green
         }
     } catch {
-        Write-Host "OFFLINE (HTTP Bridge not running)" -ForegroundColor Yellow
+        Write-Host "FAILED" -ForegroundColor Red
     }
 
     Write-Host "====================================================" -ForegroundColor Blue
@@ -159,8 +139,7 @@ function Show-Status {
     }
 
     Write-Host "Target Oracle VPS:  $ServerIP"
-    Write-Host "SOCKS5 Port:        127.0.0.1:$SocksPort"
-    Write-Host "HTTP Bridge Port:   127.0.0.1:$HttpPort"
+    Write-Host "SOCKS5 Proxy:       127.0.0.1:$SocksPort"
     Write-Host "Windows Proxy:      $((Get-ProxyStatus))"
 
     Write-Host "`nQuick IP Verification:"
